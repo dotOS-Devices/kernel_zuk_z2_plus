@@ -324,129 +324,6 @@ static int time_in_state_seq_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-/*
- * concurrent_active_time is an array of u32's in the following format:
- * [n, uid0, time0a, time0b, ..., time0n,
- *     uid1, time1a, time1b, ..., time1n,
- *     uid2, time2a, time2b, ..., time2n, etc.]
- * where n is the total number of cpus (num_possible_cpus)
- */
-static int concurrent_active_time_seq_show(struct seq_file *m, void *v)
-{
-	struct uid_entry *uid_entry;
-	u32 uid, time, num_possible_cpus = num_possible_cpus();
-	int i;
-
-	if (!uid_cpupower_enable)
-		return 0;
-
-	if (v == uid_hash_table)
-		seq_write(m, &num_possible_cpus, sizeof(num_possible_cpus));
-
-	rcu_read_lock();
-
-	hlist_for_each_entry_rcu(uid_entry, (struct hlist_head *)v, hash) {
-		uid = (u32) uid_entry->uid;
-		seq_write(m, &uid, sizeof(uid));
-
-		for (i = 0; i < num_possible_cpus; ++i) {
-			time = (u32) cputime_to_clock_t(
-				atomic64_read(
-					&uid_entry->concurrent_times->active[i])
-				);
-			seq_write(m, &time, sizeof(time));
-		}
-	}
-
-	rcu_read_unlock();
-	return 0;
-}
-
-/*
- * concurrent_policy_time is an array of u32's in the following format:
- * [n, x1, ..., xn, uid0, time0_1_1, ..., time0_1_x1,
- *                        ...,
- *                        time0_n_1, ..., time0_n_xn,
- *                  uid1, time1_1_1, ..., time1_1_x1,
- *                        ...,
- *                        time1_n_1, ..., time1_n_xn, etc.]
- * where n is the number of policies
- * xi is the number cpus on a particular policy
- * timea_b_c is uid a's time running on policy b as one of c concurrent tasks
- */
-static int concurrent_policy_time_seq_show(struct seq_file *m, void *v)
-{
-	struct uid_entry *uid_entry;
-	struct cpu_freqs *freqs;
-	struct cpu_freqs *last_freqs = NULL;
-	u32 buf[num_possible_cpus() + 1];
-	u32 uid, time;
-	int i, cnt = 0, num_possible_cpus = num_possible_cpus();
-
-	if (!uid_cpupower_enable)
-		return 0;
-
-	if (v == uid_hash_table) {
-		for_each_possible_cpu(i) {
-			freqs = all_freqs[i];
-			if (!freqs)
-				continue;
-			if (freqs != last_freqs) {
-				cnt++;
-				last_freqs = freqs;
-				buf[cnt] = 0;
-			}
-			++buf[cnt];
-		}
-		buf[0] = (u32) cnt;
-		seq_write(m, buf, (cnt + 1) * sizeof(*buf));
-	}
-	rcu_read_lock();
-	hlist_for_each_entry_rcu(uid_entry, (struct hlist_head *)v, hash) {
-		uid = (u32) uid_entry->uid;
-		seq_write(m, &uid, sizeof(uid));
-
-		for (i = 0; i < num_possible_cpus; ++i) {
-			time = (u32) cputime_to_clock_t(
-				atomic64_read(
-					&uid_entry->concurrent_times->policy[i])
-				);
-			seq_write(m, &time, sizeof(time));
-		}
-	}
-	rcu_read_unlock();
-	return 0;
-}
-
-static int uid_cpupower_enable_show(struct seq_file *m, void *v)
-{
-	seq_putc(m, uid_cpupower_enable);
-	seq_putc(m, '\n');
-
-	return 0;
-}
-
-static ssize_t uid_cpupower_enable_write(struct file *file,
-	const char __user *buffer, size_t count, loff_t *ppos)
-{
-	char enable;
-
-	if (count >= sizeof(enable))
-		count = sizeof(enable);
-
-	if (copy_from_user(&enable, buffer, count))
-		return -EFAULT;
-
-	if (enable == '0')
-		uid_cpupower_enable = 0;
-	else if (enable == '1')
-		uid_cpupower_enable = 1;
-	else
-		return -EINVAL;
-
-	return count;
-}
-
 void cpufreq_task_times_init(struct task_struct *p)
 {
 	unsigned long flags;
@@ -820,56 +697,6 @@ const struct file_operations time_in_state_fops = {
 	.release	= seq_release,
 };
 
-static const struct seq_operations concurrent_active_time_seq_ops = {
-	.start = uid_seq_start,
-	.next = uid_seq_next,
-	.stop = uid_seq_stop,
-	.show = concurrent_active_time_seq_show,
-};
-
-static int concurrent_active_time_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &concurrent_active_time_seq_ops);
-}
-
-static const struct file_operations concurrent_active_time_fops = {
-	.open		= concurrent_active_time_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
-static const struct seq_operations concurrent_policy_time_seq_ops = {
-	.start = uid_seq_start,
-	.next = uid_seq_next,
-	.stop = uid_seq_stop,
-	.show = concurrent_policy_time_seq_show,
-};
-
-static int concurrent_policy_time_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &concurrent_policy_time_seq_ops);
-}
-
-static const struct file_operations concurrent_policy_time_fops = {
-	.open		= concurrent_policy_time_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
-static int uid_cpupower_enable_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, uid_cpupower_enable_show, PDE_DATA(inode));
-}
-
-static const struct file_operations uid_cpupower_enable_fops = {
-	.open		= uid_cpupower_enable_open,
-	.read		= seq_read,
-	.release	= single_release,
-	.write		= uid_cpupower_enable_write,
-};
-
 static int __init cpufreq_times_init(void)
 {
 	struct proc_dir_entry *uid_cpupower;
@@ -882,19 +709,8 @@ static int __init cpufreq_times_init(void)
 		pr_warn("%s: failed to create uid_cputime proc entry\n",
 			__func__);
 	} else {
-		proc_create_data("enable", 0666, uid_cpupower,
-				 &uid_cpupower_enable_fops, NULL);
-
 		proc_create_data("time_in_state", 0444, uid_cpupower,
 				 &time_in_state_fops, NULL);
-
-		proc_create_data("concurrent_active_time", 0444, uid_cpupower,
-				 &concurrent_active_time_fops, NULL);
-
-		proc_create_data("concurrent_policy_time", 0444, uid_cpupower,
-				 &concurrent_policy_time_fops, NULL);
-
-		uid_cpupower_enable = 1;
 	}
 
 	return 0;
